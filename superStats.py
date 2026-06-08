@@ -164,12 +164,16 @@ def display_stats(wrapped):
     for item in wrapped:
         print("\nYour Number One Artist: ")
         print(item["top_artist"])
+        print()
         print("\nYour Top 5 Artists: ")
         print(item["top_five_artists"])
+        print()
         print("\nYour Top 5 Songs: ")
         print(item["top_five_songs"])
+        print()
         print("\nYour Top Genres: ")
         print(item["top_genres"])
+        print()
         print("\nTotal minutes listened: ")
         print(item["total_minutes_listened"])
     
