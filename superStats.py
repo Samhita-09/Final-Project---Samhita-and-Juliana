@@ -8,32 +8,31 @@ import os
 import sys
 from datetime import datetime
 import spotipy
+from spotipy.oauth2 import SpotifyOAuth
 
 from dotenv import load_dotenv
 
 load_dotenv() # Loads variables from .env
 gemini_API_KEY = os.getenv("gemini_API_KEY")
-SPOTIFY_API = os.getenv("spotify_API_KEY")
-CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID") 
-CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+CLIENT_ID = os.getenv("CLIENT_ID") 
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+REDIRECT_URI = "http://127.0.0.1:8000/callback"
 
-auth_url = 'https://accounts.spotify.com/api/token'
-auth_response = requests.post(auth_url, {
-    'grant_type': 'client_credentials',
-    'client_id': CLIENT_ID,
-    'client_secret': CLIENT_SECRET,
-})
-
-# Parse the JSON response to grab the token
-access_token = auth_response.json().get('access_token')
-print(f"Your temporary API Access Token: {access_token}")
+# used Gemini to get this
+sp_oauth = SpotifyOAuth(
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    redirect_uri=REDIRECT_URI,
+    scope="user-top-read user-read-recently-played",
+    show_dialog=True
+)
+sp = spotipy.Spotify(auth_manager=sp_oauth)
 
 # ============================================================
 # YOUR API KEY (REQUIRED)
 # ============================================================
 
 URL = (
-    
     "https://generativelanguage.googleapis.com"
     "/v1beta/models/gemini-2.5-flash:generateContent"
     f"?key={gemini_API_KEY}"
@@ -61,44 +60,35 @@ def get_base_dir():
 # ============================================================
 
 def get_spotify_data():
-    # We used ai to get the spotify data because after getting the access tokens and everything, we didn't know how to actually access the data
+    # We used ai to get the spotify data because after getting the api and everything, we didn't know how to actually access the data
     """
     Pulls the maximum allowed history from Spotify's top items and recently played endpoints.
     """
-    headers = {"Authorization": f"Bearer {access_token}"}
     all_tracks_records = []
 
-    # --- PART A: Get Top Tracks (Max Limit is 50) ---
-    top_url = "https://api.spotify.com/v1/me/top/tracks?limit=10&time_range=medium_term"
+    # --- PART A: Get Top Tracks ---
     try:
-        # Requesting the hard limit of 50 top tracks
-        top_response = requests.get(top_url, headers=headers, params={"limit": 50, "time_range": "medium_term"}, timeout=15)
-        if top_response.status_code == 200:
-            top_data = top_response.json()
-            for item in top_data.get('items', []):
-                song = item.get('name')
-                artist = item['artists'][0]['name'] if item.get('artists') else "Unknown"
-                album = item.get('album', {}).get('name', 'Unknown Album')
-                all_tracks_records.append(f"[Type: Top Track] '{song}' by {artist} (Album: {album})")
+        top_tracks = sp.current_user_top_tracks(limit=50, time_range="medium_term")
+        for item in top_tracks.get('items', []):
+            song = item.get('name')
+            artist = item['artists'][0]['name'] if item.get('artists') else "Unknown"
+            # Removed the album name to save space
+            all_tracks_records.append(f"[Top Track] {song} by {artist}")
     except Exception as e:
         print("Error fetching top tracks:", e)
 
-    # --- PART B: Get Recently Played Tracks (Max Limit is 50) ---
-    recent_url = "https://api.spotify.com3"
+    # --- PART B: Get Recently Played Tracks ---
     try:
-        recent_response = requests.get(recent_url, headers=headers, params={"limit": 50}, timeout=15)
-        if recent_response.status_code == 200:
-            recent_data = recent_response.json()
-            for item in recent_data.get('items', []):
-                track = item.get('track', {})
-                song = track.get('name')
-                artist = track['artists'][0]['name'] if track.get('artists') else "Unknown"
-                played_at = item.get('played_at', '')
-                all_tracks_records.append(f"[Type: Recently Played] '{song}' by {artist} at {played_at}")
+        recent_tracks = sp.current_user_recently_played(limit=50)
+        for item in recent_tracks.get('items', []):
+            track = item.get('track', {})
+            song = track.get('name')
+            artist = track['artists'][0]['name'] if track.get('artists') else "Unknown"
+            # Just keeping a basic note that it was played recently
+            all_tracks_records.append(f"[Recent] {song} by {artist}")
     except Exception as e:
         print("Error fetching recently played:", e)
 
-    # Combine everything into one massive string block
     if not all_tracks_records:
         return "No listening history data could be retrieved."
         
@@ -112,7 +102,15 @@ def generate_stats(all_tracks_records):
     """
     Sends the user's listening data to Gemini and asks it to return stats.
     """
-    prompt = f"""Based on the user's collected listening data, return their number one artist, top five artists including the number one, top five songs they've listened to the most so far, the top 3 genres of songs they've listened to the most, and finally, the total number of minutes they have listened to music for so far.
+    prompt = f"""Based on the user's collected listening data, return their number one artist, top five artists including the number one, top five songs they've listened to the most so far, the number of times they've listened to their nbumber one top song, and the top 3 genres of songs they've listened to the most.
+    
+    Follow these rules strictly:
+    1. Do NOT make up any data, ONLY use what is provided by spotify itself.
+    2. For top artists and top songs, rank them based on how frequently they appear in the data, don't hallucinate values or make assumptions.
+    3. While explicit genre data is not written in the log, you MUST use your own vast internal database and knowledge of music to look up the artists listed in the log, determine their genres, and find the top 3 most prominent genres overall.
+    
+    Use this raw listening data:
+    {all_tracks_records}
     
 Respond with ONLY a valid JSON array in this exact format:
 [
@@ -120,9 +118,9 @@ Respond with ONLY a valid JSON array in this exact format:
     "top_artist": "Your number one artist so far is...",
     "top_five_artists": "Your top 5 artists so far are...",
     "top_five_songs": "Your top 5 songs so far are...",
-    "top_genres": "Your top 3 genres so far are...",
-    "total_minutes_listened": "The total number of minutes of music you've listened to so far is...",
-  }}
+    "top_times_played": "The number of times you played your number one top song is:...",
+    "top_genres": "Your top 3 genres so far are..."
+    }}
 ]
 Only the JSON array. No extra text.
 """
@@ -130,7 +128,7 @@ Only the JSON array. No extra text.
     body = {"contents": [{"parts": [{"text": prompt}]}]}
 
     try:
-        response = requests.post(URL, json=body, timeout=30)
+        response = requests.post(URL, json=body, timeout=60)
 
         if response.status_code != 200:
             print(f"API error: {response.status_code}")
@@ -174,8 +172,8 @@ def display_stats(wrapped):
         print("\nYour Top Genres: ")
         print(item["top_genres"])
         print()
-        print("\nTotal minutes listened: ")
-        print(item["total_minutes_listened"])
+        print("\nYour Top Song: ")
+        print(item["top_times_played"])
     
 # ============================================================
 # STEP 4: SAVE RESULTS TO CSV
@@ -197,8 +195,8 @@ def save_stats(wrapped):
                 "top_artist",
                 "top_five_artists",
                 "top_five_songs",
-                "top_genres",
-                "total_minutes_listened"
+                "top_times_played",
+                "top_genres"
             ],
         )
 
@@ -212,8 +210,8 @@ def save_stats(wrapped):
                 "top_artist": f"\n{i["top_artist"]}\n\n",
                 "top_five_artists": f"\n{i["top_five_artists"]}\n\n",
                 "top_five_songs": f"\n{i["top_five_songs"]}\n\n",
+                "top_times_played": f"\n{i["top_times_played"]}\n\n",
                 "top_genres": f"\n{i["top_genres"]}\n\n",
-                "total_minutes_listened": f"\n{i["total_minutes_listened"]}\n\n"
             })
 
     print("Wrapped saved to", file_path)
